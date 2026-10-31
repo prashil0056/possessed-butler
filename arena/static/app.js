@@ -10,39 +10,44 @@ const state = {
     stats: { total: 0, blocked: 0, breached: 0, block_rate: 0 },
 };
 
-// --- DOM helpers ---
 const $ = (id) => document.getElementById(id);
 
 // --- WebSocket ---
+
 function connectWS() {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const url = `${proto}//${location.host}/ws`;
     state.ws = new WebSocket(url);
 
     state.ws.onopen = () => {
-        setConnectionStatus('connected', '🟢 connected');
+        setConnectionStatus(true);
     };
 
     state.ws.onmessage = (event) => {
-        const msg = JSON.parse(event.data);
-        handleMessage(msg);
+        try {
+            const msg = JSON.parse(event.data);
+            handleMessage(msg);
+        } catch (e) {
+            console.error('ws parse error', e);
+        }
     };
 
     state.ws.onclose = () => {
-        setConnectionStatus('disconnected', '🔴 disconnected — retrying…');
+        setConnectionStatus(false);
         setTimeout(connectWS, 2000);
     };
 
-    state.ws.onerror = () => {
-        state.ws.close();
-    };
+    state.ws.onerror = () => state.ws.close();
 }
 
-function setConnectionStatus(cls, text) {
+function setConnectionStatus(connected) {
     const el = $('connection-status');
-    el.className = cls;
-    el.textContent = text;
+    if (!el) return;
+    el.textContent = connected ? 'live' : 'offline';
+    el.classList.toggle('connected', connected);
 }
+
+// --- Message handling ---
 
 function handleMessage(msg) {
     switch (msg.type) {
@@ -54,27 +59,32 @@ function handleMessage(msg) {
             renderTimer();
             renderStats();
             break;
+
         case 'tick':
             state.round = msg.round;
             state.stats = msg.stats;
             renderTimer();
             renderStats();
             break;
+
         case 'defense_updated':
             state.defense = msg.defense;
             renderDefense();
-            addResult('defense-status', 'info', 'Defense updated', 'New config applies to next attack');
+            addResult('defense-status', 'info', 'Defense updated', 'applies to next attack', null);
             break;
+
         case 'attack_result':
             addAttackResult(msg.attack);
             state.stats = msg.stats;
             renderStats();
             break;
+
         case 'round_started':
             state.round = msg.round;
             renderTimer();
-            addResult('defense-status', 'info', 'Round started', '10-minute countdown running');
+            addResult('defense-status', 'info', 'Round started', '10-minute countdown running', null);
             break;
+
         case 'round_reset':
             state.round = msg.round;
             state.stats = msg.stats;
@@ -82,11 +92,13 @@ function handleMessage(msg) {
             $('defense-status').innerHTML = '';
             renderTimer();
             renderStats();
+            updateCounts();
             break;
     }
 }
 
 // --- Rendering ---
+
 function renderDefense() {
     $('def-input-guard').checked = state.defense.input_guard;
     $('def-output-guard').checked = state.defense.output_guard;
@@ -95,11 +107,13 @@ function renderDefense() {
 }
 
 function renderTimer() {
-    const remaining = state.round.remaining || 0;
+    const remaining = Math.max(0, state.round.remaining || 0);
     const min = Math.floor(remaining / 60);
     const sec = remaining % 60;
     const text = `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+
     const timer = $('timer');
+    if (!timer) return;
     timer.textContent = text;
 
     timer.classList.remove('warning', 'danger');
@@ -108,91 +122,117 @@ function renderTimer() {
 }
 
 function renderStats() {
-    $('stat-total').textContent = state.stats.total;
-    $('stat-blocked').textContent = state.stats.blocked;
-    $('stat-breached').textContent = state.stats.breached;
-    $('stat-rate').textContent = `${(state.stats.block_rate * 100).toFixed(1)}%`;
+    $('stat-total').textContent = state.stats.total ?? 0;
+    $('stat-blocked').textContent = state.stats.blocked ?? 0;
+    $('stat-breached').textContent = state.stats.breached ?? 0;
+
+    const rate = state.stats.block_rate ?? 0;
+    $('stat-rate').textContent = state.stats.total > 0 ? `${(rate * 100).toFixed(0)}%` : '—';
 }
 
-function addResult(containerId, badgeType, title, detail) {
-    const container = $(containerId);
+function updateCounts() {
+    const attackItems = $('attack-results').children.length;
+    const defenseItems = $('defense-status').children.length;
+    $('attack-count').textContent = `${attackItems} ${attackItems === 1 ? 'attack' : 'attacks'}`;
+    $('defense-count').textContent = `${defenseItems} ${defenseItems === 1 ? 'event' : 'events'}`;
+}
+
+// --- Result rendering ---
+
+function buildResultItem(variant, badgeText, payloadText, reasonText, techText) {
     const item = document.createElement('div');
-    item.className = 'result-item';
+    item.className = `result-item ${variant}`;
+
+    const top = document.createElement('div');
+    top.className = 'result-top';
 
     const badge = document.createElement('span');
-    badge.className = `result-badge badge-${badgeType}`;
-    badge.textContent = title;
+    badge.className = `result-badge badge-${variant}`;
+    badge.textContent = badgeText;
+    top.appendChild(badge);
 
-    item.appendChild(badge);
-    if (detail) {
-        const d = document.createElement('div');
-        d.className = 'result-payload';
-        d.textContent = detail;
-        item.appendChild(d);
+    if (techText) {
+        const tech = document.createElement('span');
+        tech.className = 'result-tech';
+        tech.textContent = techText;
+        top.appendChild(tech);
     }
 
+    item.appendChild(top);
+
+    if (payloadText) {
+        const p = document.createElement('div');
+        p.className = 'result-payload';
+        p.textContent = payloadText;
+        item.appendChild(p);
+    }
+
+    if (reasonText) {
+        const r = document.createElement('div');
+        r.className = 'result-reason';
+        r.textContent = reasonText;
+        item.appendChild(r);
+    }
+
+    return item;
+}
+
+function addResult(containerId, variant, badgeText, payloadText, reasonText) {
+    const container = $(containerId);
+    if (!container) return;
+    const item = buildResultItem(variant, badgeText, payloadText, reasonText, null);
     container.insertBefore(item, container.firstChild);
 
-    // Keep only latest 20
-    while (container.children.length > 20) {
+    while (container.children.length > 30) {
         container.removeChild(container.lastChild);
     }
+    updateCounts();
 }
 
 function addAttackResult(attack) {
-    const container = $('attack-results');
-    const item = document.createElement('div');
-    item.className = 'result-item';
+    const variant = attack.blocked ? 'blocked' : 'breached';
+    const badgeText = attack.blocked
+        ? `Blocked · ${attack.block_layer || '?'}`
+        : 'Breached';
+    const payloadText = attack.payload.length > 140
+        ? attack.payload.slice(0, 140) + '…'
+        : attack.payload;
+    const reasonText = attack.blocked
+        ? attack.reason
+        : (attack.response_snippet || 'butler responded');
 
-    const badge = document.createElement('span');
-    const status = attack.blocked ? 'blocked' : 'breached';
-    badge.className = `result-badge badge-${status}`;
-    badge.textContent = attack.blocked ? `BLOCKED (${attack.block_layer || '?'})` : 'BREACHED';
+    const attackItem = buildResultItem(variant, badgeText, payloadText, reasonText, attack.technique);
+    const defenseItem = buildResultItem(variant, badgeText, payloadText, reasonText, attack.technique);
 
-    const payload = document.createElement('div');
-    payload.className = 'result-payload';
-    payload.textContent = `[${attack.technique}] ${attack.payload.slice(0, 120)}`;
+    const attackContainer = $('attack-results');
+    const defenseContainer = $('defense-status');
 
-    item.appendChild(badge);
-    item.appendChild(payload);
+    attackContainer.insertBefore(attackItem, attackContainer.firstChild);
+    defenseContainer.insertBefore(defenseItem, defenseContainer.firstChild);
 
-    if (attack.blocked && attack.reason) {
-        const reason = document.createElement('div');
-        reason.className = 'result-response';
-        reason.textContent = `Reason: ${attack.reason}`;
-        item.appendChild(reason);
-    } else if (attack.response_snippet) {
-        const resp = document.createElement('div');
-        resp.className = 'result-response';
-        resp.textContent = `Response: ${attack.response_snippet}`;
-        item.appendChild(resp);
+    while (attackContainer.children.length > 30) {
+        attackContainer.removeChild(attackContainer.lastChild);
+    }
+    while (defenseContainer.children.length > 30) {
+        defenseContainer.removeChild(defenseContainer.lastChild);
     }
 
-    container.insertBefore(item, container.firstChild);
-    while (container.children.length > 20) {
-        container.removeChild(container.lastChild);
-    }
-
-    // Also show on defense side (they see what's coming)
-    const defContainer = $('defense-status');
-    const defItem = item.cloneNode(true);
-    defContainer.insertBefore(defItem, defContainer.firstChild);
-    while (defContainer.children.length > 20) {
-        defContainer.removeChild(defContainer.lastChild);
-    }
+    updateCounts();
 }
 
 // --- Actions ---
+
 async function sendAttack() {
     const payload = $('attack-payload').value.trim();
     if (!payload) {
-        alert('Enter a payload first');
+        $('attack-payload').focus();
         return;
     }
 
     const btn = $('send-attack');
+    const original = btn.innerHTML;
     btn.disabled = true;
-    btn.textContent = 'Running…';
+    btn.innerHTML = '<span>Running…</span><span class="btn-arrow">↻</span>';
 
     try {
         const resp = await fetch('/api/attack', {
@@ -204,14 +244,14 @@ async function sendAttack() {
             }),
         });
         if (!resp.ok) {
-            const err = await resp.json();
-            addResult('attack-results', 'breached', 'ERROR', JSON.stringify(err));
+            const err = await resp.json().catch(() => ({}));
+            addResult('attack-results', 'breached', 'Error', payload, JSON.stringify(err));
         }
     } catch (e) {
-        addResult('attack-results', 'breached', 'NETWORK ERROR', String(e));
+        addResult('attack-results', 'breached', 'Network error', payload, String(e));
     } finally {
         btn.disabled = false;
-        btn.textContent = 'Send Attack';
+        btn.innerHTML = original;
     }
 }
 
@@ -225,8 +265,9 @@ async function updateDefense() {
     };
 
     const btn = $('update-defense');
+    const original = btn.innerHTML;
     btn.disabled = true;
-    btn.textContent = 'Saving…';
+    btn.innerHTML = '<span>Saving…</span><span class="btn-arrow">↻</span>';
 
     try {
         const resp = await fetch('/api/defense', {
@@ -235,39 +276,49 @@ async function updateDefense() {
             body: JSON.stringify(newDefense),
         });
         if (!resp.ok) {
-            const err = await resp.json();
-            addResult('defense-status', 'breached', 'ERROR', JSON.stringify(err));
+            const err = await resp.json().catch(() => ({}));
+            addResult('defense-status', 'breached', 'Error', 'defense update failed', JSON.stringify(err));
         }
     } catch (e) {
-        addResult('defense-status', 'breached', 'NETWORK ERROR', String(e));
+        addResult('defense-status', 'breached', 'Network error', 'defense update failed', String(e));
     } finally {
         btn.disabled = false;
-        btn.textContent = 'Update Defense';
+        btn.innerHTML = original;
     }
 }
 
 async function startRound() {
-    await fetch('/api/round/start', { method: 'POST' });
+    try {
+        await fetch('/api/round/start', { method: 'POST' });
+    } catch (e) {
+        console.error(e);
+    }
 }
 
 async function resetRound() {
-    if (!confirm('Reset round timer and clear all stats?')) return;
-    await fetch('/api/round/reset', { method: 'POST' });
+    if (!confirm('Reset round timer and clear all results?')) return;
+    try {
+        await fetch('/api/round/reset', { method: 'POST' });
+    } catch (e) {
+        console.error(e);
+    }
 }
 
-// --- Event bindings ---
-$('send-attack').addEventListener('click', sendAttack);
-$('update-defense').addEventListener('click', updateDefense);
-$('start-round').addEventListener('click', startRound);
-$('reset-round').addEventListener('click', resetRound);
+// --- Bindings ---
 
-// Ctrl+Enter in textarea sends attack
-$('attack-payload').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-        e.preventDefault();
-        sendAttack();
-    }
+document.addEventListener('DOMContentLoaded', () => {
+    $('send-attack').addEventListener('click', sendAttack);
+    $('update-defense').addEventListener('click', updateDefense);
+    $('start-round').addEventListener('click', startRound);
+    $('reset-round').addEventListener('click', resetRound);
+
+    $('attack-payload').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            sendAttack();
+        }
+    });
+
+    connectWS();
+    updateCounts();
 });
-
-// Boot
-connectWS();
