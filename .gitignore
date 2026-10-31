@@ -11,3 +11,4 @@ results/
 dashboard/
 !.env.example
 !.env.example
+arena/state.json
