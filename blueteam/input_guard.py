@@ -28,11 +28,11 @@ class InputGuard:
         self.enforce = enforce
         self.shield = None
         try:
-            from prompt_shield import PromptShield
-            self.shield = PromptShield()
+            import importlib
+            prompt_shield = importlib.import_module("prompt_shield")
+            self.shield = getattr(prompt_shield, "PromptShield")()
             self.mode = "prompt_shield"
-        except (ImportError, Exception) as e:
-            print(f"[input_guard] prompt-shield unavailable ({e}); using fallback keyword detection")
+        except (ImportError, AttributeError, Exception):
             self.mode = "fallback"
 
     def _scan_fallback(self, user_input: str) -> tuple:
